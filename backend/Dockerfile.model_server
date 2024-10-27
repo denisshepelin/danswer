@@ -14,10 +14,13 @@ ENV DANSWER_VERSION=${DANSWER_VERSION} \
 
 RUN echo "DANSWER_VERSION: ${DANSWER_VERSION}"
 
+# Install uv to manage Python dependencies
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+ENV UV_SYSTEM_PYTHON=1
+ENV UV_HTTP_TIMEOUT=30
+
 COPY ./requirements/model_server.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --upgrade \
-        --retries 5 \
-        --timeout 30 \
+RUN uv pip install --no-cache-dir --upgrade \
         -r /tmp/requirements.txt
 
 RUN apt-get remove -y --allow-remove-essential perl-base && \
