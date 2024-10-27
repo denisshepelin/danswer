@@ -14,7 +14,7 @@ import { destructureValue, getFinalLLM, structureValue } from "@/lib/llm/utils";
 import { useState } from "react";
 import { Hoverable } from "@/components/Hoverable";
 import { Popover } from "@/components/popover/Popover";
-import { StarFeedback } from "@/components/icons/icons";
+import { ReloadFeedback } from "@/components/icons/icons";
 import { IconType } from "react-icons";
 
 export function RegenerateDropdown({
@@ -92,11 +92,11 @@ export function RegenerateDropdown({
       content={
         <div onClick={() => toggleDropdownVisible(!isOpen)}>
           {!alternate ? (
-            <Hoverable size={16} icon={StarFeedback as IconType} />
+            <Hoverable size={16} icon={ReloadFeedback as IconType} />
           ) : (
             <Hoverable
               size={16}
-              icon={StarFeedback as IconType}
+              icon={ReloadFeedback as IconType}
               hoverText={getDisplayNameForModel(alternate)}
             />
           )}
