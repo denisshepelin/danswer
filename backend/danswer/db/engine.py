@@ -29,6 +29,7 @@ from danswer.configs.app_configs import POSTGRES_API_SERVER_POOL_OVERFLOW
 from danswer.configs.app_configs import POSTGRES_API_SERVER_POOL_SIZE
 from danswer.configs.app_configs import POSTGRES_DB
 from danswer.configs.app_configs import POSTGRES_HOST
+from danswer.configs.app_configs import POSTGRES_IDLE_SESSIONS_TIMEOUT
 from danswer.configs.app_configs import POSTGRES_PASSWORD
 from danswer.configs.app_configs import POSTGRES_POOL_PRE_PING
 from danswer.configs.app_configs import POSTGRES_POOL_RECYCLE
@@ -37,10 +38,10 @@ from danswer.configs.app_configs import POSTGRES_USER
 from danswer.configs.app_configs import USER_AUTH_SECRET
 from danswer.configs.constants import POSTGRES_UNKNOWN_APP_NAME
 from danswer.utils.logger import setup_logger
-from shared_configs.configs import CURRENT_TENANT_ID_CONTEXTVAR
 from shared_configs.configs import MULTI_TENANT
 from shared_configs.configs import POSTGRES_DEFAULT_SCHEMA
 from shared_configs.configs import TENANT_ID_PREFIX
+from shared_configs.contextvars import CURRENT_TENANT_ID_CONTEXTVAR
 
 logger = setup_logger()
 
@@ -309,8 +310,12 @@ async def get_async_session_with_tenant(
         try:
             # Set the search_path to the tenant's schema
             await session.execute(text(f'SET search_path = "{tenant_id}"'))
-        except Exception as e:
-            logger.error(f"Error setting search_path: {str(e)}")
+            if POSTGRES_IDLE_SESSIONS_TIMEOUT:
+                await session.execute(
+                    f"SET SESSION idle_in_transaction_session_timeout = {POSTGRES_IDLE_SESSIONS_TIMEOUT}"
+                )
+        except Exception:
+            logger.exception("Error setting search_path.")
             # You can choose to re-raise the exception or handle it
             # Here, we'll re-raise to prevent proceeding with an incorrect session
             raise
@@ -322,11 +327,18 @@ async def get_async_session_with_tenant(
 def get_session_with_tenant(
     tenant_id: str | None = None,
 ) -> Generator[Session, None, None]:
-    """Generate a database session bound to a connection with the appropriate tenant schema set."""
+    """
+    Generate a database session bound to a connection with the appropriate tenant schema set.
+    This preserves the tenant ID across the session and reverts to the previous tenant ID
+    after the session is closed.
+    """
     engine = get_sqlalchemy_engine()
 
+    # Store the previous tenant ID
+    previous_tenant_id = CURRENT_TENANT_ID_CONTEXTVAR.get()
+
     if tenant_id is None:
-        tenant_id = CURRENT_TENANT_ID_CONTEXTVAR.get()
+        tenant_id = previous_tenant_id
     else:
         CURRENT_TENANT_ID_CONTEXTVAR.set(tenant_id)
 
@@ -335,30 +347,39 @@ def get_session_with_tenant(
     if not is_valid_schema_name(tenant_id):
         raise HTTPException(status_code=400, detail="Invalid tenant ID")
 
-    # Establish a raw connection
-    with engine.connect() as connection:
-        # Access the raw DBAPI connection and set the search_path
-        dbapi_connection = connection.connection
+    try:
+        # Establish a raw connection
+        with engine.connect() as connection:
+            # Access the raw DBAPI connection and set the search_path
+            dbapi_connection = connection.connection
 
-        # Set the search_path outside of any transaction
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute(f'SET search_path = "{tenant_id}"')
-        finally:
-            cursor.close()
-
-        # Bind the session to the connection
-        with Session(bind=connection, expire_on_commit=False) as session:
+            # Set the search_path outside of any transaction
+            cursor = dbapi_connection.cursor()
             try:
-                yield session
+                cursor.execute(f'SET search_path = "{tenant_id}"')
+                if POSTGRES_IDLE_SESSIONS_TIMEOUT:
+                    cursor.execute(
+                        f"SET SESSION idle_in_transaction_session_timeout = {POSTGRES_IDLE_SESSIONS_TIMEOUT}"
+                    )
             finally:
-                # Reset search_path to default after the session is used
-                if MULTI_TENANT:
-                    cursor = dbapi_connection.cursor()
-                    try:
-                        cursor.execute('SET search_path TO "$user", public')
-                    finally:
-                        cursor.close()
+                cursor.close()
+
+            # Bind the session to the connection
+            with Session(bind=connection, expire_on_commit=False) as session:
+                try:
+                    yield session
+                finally:
+                    # Reset search_path to default after the session is used
+                    if MULTI_TENANT:
+                        cursor = dbapi_connection.cursor()
+                        try:
+                            cursor.execute('SET search_path TO "$user", public')
+                        finally:
+                            cursor.close()
+
+    finally:
+        # Restore the previous tenant ID
+        CURRENT_TENANT_ID_CONTEXTVAR.set(previous_tenant_id)
 
 
 def set_search_path_on_checkout(
